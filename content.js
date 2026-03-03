@@ -98,12 +98,17 @@ async function humanType(element, text) {
 }
 
 // ── ChatGPT DOM helpers ────────────────────────────────────────────────────────
-const isGenerating = () =>
-    document.querySelector('button[aria-label="Stop streaming"]') !== null ||
-    document.querySelector('button[data-testid="stop-button"]')   !== null;
 
-const isResponseComplete = () =>
-    document.querySelector('button[data-state="closed"]') !== null;
+// Returns true while ChatGPT is actively streaming a response.
+// Multiple selectors for resilience against ChatGPT UI updates.
+function isGenerating() {
+    return (
+        document.querySelector('button[aria-label="Stop streaming"]')  !== null ||
+        document.querySelector('button[aria-label="Stop generating"]') !== null ||
+        document.querySelector('button[data-testid="stop-button"]')    !== null ||
+        document.querySelector('[data-testid="stop-button"]')          !== null
+    );
+}
 
 function extractLastResponse() {
     const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
@@ -149,6 +154,12 @@ async function executePrompt(prompt, promptIndex, total) {
     const textarea = await waitForElement('#prompt-textarea', 15000);
     if (!textarea || stopped) return;
 
+    // Snapshot the current number of assistant messages so we can detect
+    // when a NEW one appears (= generation has started).
+    const prevMsgCount = document.querySelectorAll(
+        '[data-message-author-role="assistant"]'
+    ).length;
+
     // 2. Type first few words, paste the rest
     await humanType(textarea, prompt);
     if (stopped) return;
@@ -157,20 +168,30 @@ async function executePrompt(prompt, promptIndex, total) {
     const sent = await clickSendButton();
     if (!sent || stopped) return;
 
-    // 4. Phase 1 – wait for ChatGPT to START generating (stop button appears)
+    // 4. Phase 1 – wait for a NEW assistant message node to appear in the DOM.
+    //    Using message-count is reliable regardless of which buttons exist on
+    //    the page — the old button[data-state="closed"] selector was always
+    //    true because Radix UI sets it on every dropdown/popover trigger.
     const started = await new Promise(resolve => {
         let elapsed = 0;
         const interval = randomInt(400, 650);
         const id = setInterval(() => {
-            if (stopped)       { clearInterval(id); resolve(false); return; }
-            if (isGenerating()) { clearInterval(id); resolve(true);  return; }
+            if (stopped) { clearInterval(id); resolve(false); return; }
+            const count = document.querySelectorAll(
+                '[data-message-author-role="assistant"]'
+            ).length;
+            if (count > prevMsgCount) { clearInterval(id); resolve(true); return; }
             elapsed += interval;
             if (elapsed >= 30000) { clearInterval(id); resolve(false); }
         }, interval);
     });
     if (!started || stopped) return;
 
-    // 5. Phase 2 – wait for generation to FINISH, simulating reading behaviour
+    // 5. Phase 2 – wait for streaming to FINISH.
+    //    Done = stop button is gone AND the last assistant message's text length
+    //    has been identical for 2 consecutive polls (~1.6–2.4 s of stability).
+    //    This correctly handles long responses, reasoning models, and cases where
+    //    the stop button selector is stale.
     await new Promise(resolve => {
         const scrollTimer = setInterval(() => {
             if (Math.random() < 0.35) {
@@ -179,12 +200,33 @@ async function executePrompt(prompt, promptIndex, total) {
             }
         }, randomInt(2500, 5000));
 
-        const pollInterval = randomInt(800, 1300);
+        let lastLen     = -1;
+        let stableTicks = 0;
+        const pollInterval = randomInt(800, 1200);
+
         const doneTimer = setInterval(() => {
-            if (stopped || isResponseComplete()) {
+            if (stopped) {
                 clearInterval(doneTimer);
                 clearInterval(scrollTimer);
                 resolve();
+                return;
+            }
+
+            const msgs   = document.querySelectorAll('[data-message-author-role="assistant"]');
+            const last   = msgs[msgs.length - 1];
+            const curLen = last ? (last.innerText || last.textContent || '').length : 0;
+
+            // Require: not actively generating + text non-empty + text unchanged
+            if (!isGenerating() && curLen > 0 && curLen === lastLen) {
+                stableTicks++;
+                if (stableTicks >= 2) {         // stable for 2 consecutive polls
+                    clearInterval(doneTimer);
+                    clearInterval(scrollTimer);
+                    resolve();
+                }
+            } else {
+                stableTicks = 0;
+                lastLen = curLen;
             }
         }, pollInterval);
     });
