@@ -8,9 +8,12 @@ document.addEventListener('DOMContentLoaded', function () {
         displayPrompts(prompts);
     });
 
-    // Save separator when it changes
+    // Save separator when it changes and refresh display to update preview formatting
     document.getElementById('separator').addEventListener('change', function () {
         chrome.storage.sync.set({ separator: this.value });
+        chrome.storage.sync.get(['prompts'], function (result) {
+            displayPrompts(result.prompts || []);
+        });
     });
 
     // Save new prompt
@@ -42,23 +45,30 @@ document.addEventListener('DOMContentLoaded', function () {
                 ? prompt  // Keep original formatting for newlines
                 : prompt.split(separator).join('\n' + separator + '\n');  // Format other separators
 
+            // Build structure without user content in innerHTML to prevent XSS
             div.innerHTML = `
             <div class="preview-mode">
-                <div class="prompt-preview">${formattedPrompt}</div>
+                <div class="prompt-preview"></div>
                 <div class="button-group">
-                    <button class="use-prompt" data-prompt="${prompt.replace(/"/g, '&quot;')}">Use Prompt Chain</button>
+                    <button class="use-prompt">Use Prompt Chain</button>
                     <button class="edit-prompt" data-index="${index}">Edit</button>
                     <button class="delete-prompt" data-index="${index}">Delete</button>
                 </div>
             </div>
             <div class="edit-mode" style="display: none;">
-                <textarea class="edit-textarea">${prompt}</textarea>
+                <textarea class="edit-textarea"></textarea>
                 <div class="button-group">
                     <button class="save-edit" data-index="${index}">Save</button>
                     <button class="cancel-edit">Cancel</button>
                 </div>
             </div>
         `;
+
+            // Safely inject user content via DOM properties, not innerHTML
+            div.querySelector('.prompt-preview').textContent = formattedPrompt;
+            div.querySelector('.use-prompt').dataset.prompt = prompt;
+            div.querySelector('.edit-textarea').value = prompt;
+
             promptsList.appendChild(div);
         });
 
