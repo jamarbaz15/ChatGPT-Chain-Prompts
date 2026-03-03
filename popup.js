@@ -1,4 +1,39 @@
 document.addEventListener('DOMContentLoaded', function () {
+    // ── Progress bar ──────────────────────────────────────────────────────────
+    function updateProgress() {
+        chrome.runtime.sendMessage({ action: 'getProgress' }, response => {
+            if (chrome.runtime.lastError || !response) return;
+            const { done, total } = response;
+            const section = document.getElementById('progress-section');
+
+            if (total === 0) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+            const pct = Math.round((done / total) * 100);
+            const bar = document.getElementById('progress-bar');
+            bar.style.width = pct + '%';
+            document.getElementById('progress-text').textContent =
+                `${done} / ${total} prompt${total !== 1 ? 's' : ''}`;
+
+            if (done === total) {
+                document.getElementById('progress-status').textContent = '✓ All done!';
+                bar.style.background = '#198754'; // green when complete
+            } else {
+                document.getElementById('progress-status').textContent =
+                    `Prompt ${done + 1} running…`;
+                bar.style.background = '#0d6efd'; // blue while running
+            }
+        });
+    }
+
+    // Poll every 500 ms while popup is open; clean up on close
+    updateProgress();
+    const progressInterval = setInterval(updateProgress, 500);
+    window.addEventListener('unload', () => clearInterval(progressInterval));
+
     // Load saved prompts
     chrome.storage.sync.get(['prompts', 'separator'], function (result) {
         const prompts = result.prompts || [];

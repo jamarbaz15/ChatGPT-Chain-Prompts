@@ -12,7 +12,7 @@ const state = {
 };
 
 // ── Message routing ────────────────────────────────────────────────────────────
-chrome.runtime.onMessage.addListener((request, sender) => {
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     switch (request.action) {
 
         case 'startChain':
@@ -37,6 +37,11 @@ chrome.runtime.onMessage.addListener((request, sender) => {
                 request.text,
                 request.promptIndex
             );
+            break;
+
+        case 'getProgress':
+            // Popup polls this to render the progress bar
+            sendResponse({ done: state.currentIndex, total: state.prompts.length });
             break;
 
         case 'stopChain':
