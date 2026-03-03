@@ -2,32 +2,48 @@
 // Owns the chain run: opens one new ChatGPT tab per prompt, waits for the
 // content script to finish, downloads the response as a .txt file, then
 // closes the tab and opens the next one.
+//
+// IMPORTANT — MV3 service workers can be killed by Chrome at any time when
+// they have no pending Chrome-API events (e.g. after a setTimeout with no
+// other activity).  To survive restarts, the chain state is stored in
+// chrome.storage.session (cleared when the browser closes, persists across
+// SW restarts within the same session).  pendingDownloads stays in memory
+// because data-URL downloads complete almost instantly; the gap is too small
+// to matter.
 
-const state = {
-    prompts: [],          // pre-parsed array of prompt strings
-    currentIndex: 0,      // which prompt we are on
-    currentTabId: null,   // the tab we just created
-    // Map<downloadId, tabId> — let us close the right tab once the download finishes
-    pendingDownloads: new Map()
-};
+// In-memory only: download-id → tab-id
+const pendingDownloads = new Map();
+
+// ── Persistent state helpers ───────────────────────────────────────────────────
+const DEFAULT_STATE = { prompts: [], currentIndex: 0, currentTabId: null };
+
+function getState() {
+    return chrome.storage.session.get('chain')
+        .then(r => r.chain ? { ...DEFAULT_STATE, ...r.chain } : { ...DEFAULT_STATE });
+}
+
+function setState(updates) {
+    return getState().then(current =>
+        chrome.storage.session.set({ chain: { ...current, ...updates } })
+    );
+}
 
 // ── Message routing ────────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     switch (request.action) {
 
         case 'startChain':
-            // Called by popup when the user clicks "Use Prompt Chain"
-            state.prompts = request.prompts || [];
-            state.currentIndex = 0;
-            state.pendingDownloads.clear();
-            openNextPrompt();
+            setState({ prompts: request.prompts || [], currentIndex: 0, currentTabId: null })
+                .then(() => openNextPrompt());
             break;
 
         case 'contentReady':
             // Content script fired on page load — if this is our tab, send the prompt
-            if (sender.tab && sender.tab.id === state.currentTabId) {
-                schedulePromptForTab(state.currentTabId);
-            }
+            getState().then(state => {
+                if (sender.tab && sender.tab.id === state.currentTabId) {
+                    schedulePromptForTab(state.currentTabId);
+                }
+            });
             break;
 
         case 'promptDone':
@@ -40,29 +56,33 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             break;
 
         case 'getProgress':
-            // Popup polls this to render the progress bar
-            sendResponse({ done: state.currentIndex, total: state.prompts.length });
-            break;
+            // Popup polls this to render the progress bar.
+            // Must return true because sendResponse is called asynchronously.
+            getState().then(state => {
+                sendResponse({ done: state.currentIndex, total: state.prompts.length });
+            });
+            return true;   // ← keeps the message channel open for async reply
 
         case 'stopChain':
-            // User clicked Stop — abort immediately
-            state.prompts = [];
-            state.currentIndex = 0;
-            state.pendingDownloads.clear();
-            if (state.currentTabId !== null) {
-                // Tell the content script to abort whatever it's doing
-                chrome.tabs.sendMessage(
-                    state.currentTabId,
-                    { action: 'stopExecution' },
-                    () => { void chrome.runtime.lastError; }
-                );
-                // Close the tab after a brief moment so the abort message lands
+            // User clicked Stop — clear state then close the active tab
+            getState().then(state => {
                 const tabToClose = state.currentTabId;
-                state.currentTabId = null;
-                setTimeout(() => {
-                    chrome.tabs.remove(tabToClose, () => { void chrome.runtime.lastError; });
-                }, 400);
-            }
+                return setState({ prompts: [], currentIndex: 0, currentTabId: null })
+                    .then(() => {
+                        if (tabToClose !== null) {
+                            chrome.tabs.sendMessage(
+                                tabToClose,
+                                { action: 'stopExecution' },
+                                () => { void chrome.runtime.lastError; }
+                            );
+                            // Brief pause so the abort message lands before we close
+                            setTimeout(() => {
+                                chrome.tabs.remove(tabToClose,
+                                    () => { void chrome.runtime.lastError; });
+                            }, 400);
+                        }
+                    });
+            });
             break;
     }
 });
@@ -70,26 +90,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ── Download tracking ──────────────────────────────────────────────────────────
 chrome.downloads.onChanged.addListener(delta => {
     if (!delta.state) return;
-    const tabId = state.pendingDownloads.get(delta.id);
+    const tabId = pendingDownloads.get(delta.id);
     if (tabId === undefined) return;
 
     if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
-        state.pendingDownloads.delete(delta.id);
+        pendingDownloads.delete(delta.id);
         closeTabAndAdvance(tabId);
     }
 });
 
 // ── Core chain logic ───────────────────────────────────────────────────────────
 function openNextPrompt() {
-    if (state.currentIndex >= state.prompts.length) {
-        state.currentTabId = null;
-        return; // All prompts done
-    }
-
-    chrome.tabs.create({ url: 'https://chatgpt.com/', active: true }, tab => {
-        state.currentTabId = tab.id;
-        // The content script will fire 'contentReady' once the page loads;
-        // we react to that in the message listener above.
+    return getState().then(state => {
+        if (state.currentIndex >= state.prompts.length) {
+            return setState({ currentTabId: null });   // all done
+        }
+        // Open the next tab and immediately persist its ID so that a SW restart
+        // between now and contentReady can still match the tab correctly.
+        return new Promise(resolve => {
+            chrome.tabs.create({ url: 'https://chatgpt.com/', active: true }, tab => {
+                setState({ currentTabId: tab.id }).then(resolve);
+            });
+        });
     });
 }
 
@@ -98,13 +120,16 @@ function openNextPrompt() {
 function schedulePromptForTab(tabId) {
     const delay = randomInt(2500, 4500);
     setTimeout(() => {
-        const prompt = state.prompts[state.currentIndex];
-        if (prompt === undefined) return;
-        chrome.tabs.sendMessage(tabId, {
-            action: 'executePrompt',
-            prompt,
-            promptIndex: state.currentIndex + 1,
-            total: state.prompts.length
+        // Re-read state from storage in case the SW was restarted during the delay
+        getState().then(state => {
+            const prompt = state.prompts[state.currentIndex];
+            if (prompt === undefined) return;
+            chrome.tabs.sendMessage(tabId, {
+                action: 'executePrompt',
+                prompt,
+                promptIndex: state.currentIndex + 1,
+                total: state.prompts.length
+            }, () => { void chrome.runtime.lastError; });
         });
     }, delay);
 }
@@ -112,7 +137,6 @@ function schedulePromptForTab(tabId) {
 function handlePromptDone(tabId, text, promptIndex) {
     const safeText = text || '';
     const filename  = `prompt-${promptIndex}-response.txt`;
-    // data: URLs are supported by chrome.downloads and avoid needing a server
     const dataUrl   = 'data:text/plain;charset=utf-8,' + encodeURIComponent(safeText);
 
     chrome.downloads.download({ url: dataUrl, filename, saveAs: false }, downloadId => {
@@ -121,17 +145,24 @@ function handlePromptDone(tabId, text, promptIndex) {
             closeTabAndAdvance(tabId);
             return;
         }
-        state.pendingDownloads.set(downloadId, tabId);
+        pendingDownloads.set(downloadId, tabId);
     });
 }
 
 function closeTabAndAdvance(tabId) {
-    state.currentIndex++;
-    chrome.tabs.remove(tabId, () => {
-        if (chrome.runtime.lastError) { /* tab was already closed — ignore */ }
-        // Human-like pause before opening the next tab
-        setTimeout(openNextPrompt, randomInt(1500, 3500));
-    });
+    // Persist the incremented index FIRST so a SW restart won't replay the
+    // same prompt.  Then close the tab and immediately open the next one —
+    // no setTimeout gap here; the natural page-load time plus the
+    // schedulePromptForTab delay (2.5–4.5 s) provides sufficient pacing.
+    getState()
+        .then(state => setState({ currentIndex: state.currentIndex + 1 }))
+        .then(() => new Promise(resolve => {
+            chrome.tabs.remove(tabId, () => {
+                void chrome.runtime.lastError;   // tab may already be closed
+                resolve();
+            });
+        }))
+        .then(() => openNextPrompt());
 }
 
 // ── Utility ────────────────────────────────────────────────────────────────────
