@@ -35,7 +35,7 @@ document.addEventListener('DOMContentLoaded', function () {
     window.addEventListener('unload', () => clearInterval(progressInterval));
 
     // Load saved prompts
-    chrome.storage.sync.get(['prompts', 'separator'], function (result) {
+    chrome.storage.local.get(['prompts', 'separator'], function (result) {
         const prompts = result.prompts || [];
         if (result.separator) {
             document.getElementById('separator').value = result.separator;
@@ -45,8 +45,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Save separator when it changes and refresh display to update preview formatting
     document.getElementById('separator').addEventListener('change', function () {
-        chrome.storage.sync.set({ separator: this.value });
-        chrome.storage.sync.get(['prompts'], function (result) {
+        chrome.storage.local.set({ separator: this.value });
+        chrome.storage.local.get(['prompts'], function (result) {
             displayPrompts(result.prompts || []);
         });
     });
@@ -60,10 +60,10 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('save-prompt').addEventListener('click', function () {
         const promptText = document.getElementById('new-prompt').value;
         if (promptText) {
-            chrome.storage.sync.get(['prompts'], function (result) {
+            chrome.storage.local.get(['prompts'], function (result) {
                 const prompts = result.prompts || [];
                 prompts.push(promptText);
-                chrome.storage.sync.set({ prompts }, function () {
+                chrome.storage.local.set({ prompts }, function () {
                     displayPrompts(prompts);
                     document.getElementById('new-prompt').value = '';
                 });
@@ -138,10 +138,10 @@ document.addEventListener('DOMContentLoaded', function () {
         document.querySelectorAll('.delete-prompt').forEach(button => {
             button.addEventListener('click', function () {
                 const index = parseInt(this.getAttribute('data-index'));
-                chrome.storage.sync.get(['prompts'], function (result) {
+                chrome.storage.local.get(['prompts'], function (result) {
                     const prompts = result.prompts || [];
                     prompts.splice(index, 1);
-                    chrome.storage.sync.set({ prompts }, function () {
+                    chrome.storage.local.set({ prompts }, function () {
                         displayPrompts(prompts);
                     });
                 });
@@ -163,10 +163,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 const promptItem = this.closest('.prompt-item');
                 const newText = promptItem.querySelector('.edit-textarea').value;
 
-                chrome.storage.sync.get(['prompts'], function (result) {
+                chrome.storage.local.get(['prompts'], function (result) {
                     const prompts = result.prompts || [];
                     prompts[index] = newText;
-                    chrome.storage.sync.set({ prompts }, function () {
+                    chrome.storage.local.set({ prompts }, function () {
                         displayPrompts(prompts);
                     });
                 });
