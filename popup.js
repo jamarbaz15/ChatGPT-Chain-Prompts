@@ -16,6 +16,11 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
+    // Stop the running chain
+    document.getElementById('stop-chain').addEventListener('click', function () {
+        chrome.runtime.sendMessage({ action: 'stopChain' });
+    });
+
     // Save new prompt
     document.getElementById('save-prompt').addEventListener('click', function () {
         const promptText = document.getElementById('new-prompt').value;

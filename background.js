@@ -38,6 +38,27 @@ chrome.runtime.onMessage.addListener((request, sender) => {
                 request.promptIndex
             );
             break;
+
+        case 'stopChain':
+            // User clicked Stop — abort immediately
+            state.prompts = [];
+            state.currentIndex = 0;
+            state.pendingDownloads.clear();
+            if (state.currentTabId !== null) {
+                // Tell the content script to abort whatever it's doing
+                chrome.tabs.sendMessage(
+                    state.currentTabId,
+                    { action: 'stopExecution' },
+                    () => { void chrome.runtime.lastError; }
+                );
+                // Close the tab after a brief moment so the abort message lands
+                const tabToClose = state.currentTabId;
+                state.currentTabId = null;
+                setTimeout(() => {
+                    chrome.tabs.remove(tabToClose, () => { void chrome.runtime.lastError; });
+                }, 400);
+            }
+            break;
     }
 });
 
