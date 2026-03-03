@@ -48,17 +48,28 @@ async function processNextPrompt() {
 
 // Function to wait for ChatGPT to complete its response
 function waitForCompletion() {
-    const checkInterval = setInterval(() => {
-        if (isResponseComplete()) {
-            clearInterval(checkInterval);
-            isProcessing = false;
+    // Phase 1: wait for ChatGPT to START generating (stop button appears)
+    const waitForStart = setInterval(() => {
+        const isGenerating =
+            document.querySelector('button[aria-label="Stop streaming"]') !== null ||
+            document.querySelector('button[data-testid="stop-button"]') !== null;
+        if (isGenerating) {
+            clearInterval(waitForStart);
 
-            // Wait a short moment before processing next prompt
-            setTimeout(() => {
-                processNextPrompt();
+            // Phase 2: wait for ChatGPT to FINISH generating (stop button gone, send button back)
+            const waitForEnd = setInterval(() => {
+                if (isResponseComplete()) {
+                    clearInterval(waitForEnd);
+                    isProcessing = false;
+
+                    // Wait a short moment before processing next prompt
+                    setTimeout(() => {
+                        processNextPrompt();
+                    }, 1000);
+                }
             }, 1000);
         }
-    }, 1000);
+    }, 500);
 }
 
 // Listen for messages from popup
