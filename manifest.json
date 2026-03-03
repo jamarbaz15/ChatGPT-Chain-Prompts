@@ -3,11 +3,16 @@
 
     "manifest_version": 3,
     "name": "ChatGPT Chain Prompts - Free Automated Message Queue",
-    "version": "1.1",
-    "description": "Free and unlimited prompt chains for ChatGPT. Save, edit, and automatically queue prompts with custom separators.",
+    "version": "1.2",
+    "description": "Free and unlimited prompt chains for ChatGPT. Each prompt runs in its own new chat tab, responses are auto-downloaded as .txt files.",
     "permissions": [
-        "storage"
+        "storage",
+        "tabs",
+        "downloads"
     ],
+    "background": {
+        "service_worker": "background.js"
+    },
     "action": {
         "default_popup": "popup.html"
     },

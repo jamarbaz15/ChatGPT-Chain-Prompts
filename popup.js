@@ -75,15 +75,23 @@ document.addEventListener('DOMContentLoaded', function () {
         // Add event listeners for use and delete buttons
         document.querySelectorAll('.use-prompt').forEach(button => {
             button.addEventListener('click', function () {
-                const prompt = this.getAttribute('data-prompt');
+                const rawPrompt = this.dataset.prompt;
                 const separator = document.getElementById('separator').value;
-                chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-                    chrome.tabs.sendMessage(tabs[0].id, {
-                        action: 'usePrompt',
-                        prompt,
-                        separator
-                    });
-                });
+
+                // Split the raw prompt into individual prompts here so background
+                // receives a clean array and doesn't need to know the separator.
+                let prompts;
+                if (separator.toLowerCase() === '\\n' || separator === '\n') {
+                    prompts = rawPrompt.split(/\n+/).map(p => p.trim()).filter(p => p);
+                } else {
+                    prompts = rawPrompt.split(separator).map(p => p.trim()).filter(p => p);
+                }
+
+                if (prompts.length > 0) {
+                    // Hand off to the background service worker which manages
+                    // opening tabs, downloading responses, and advancing the chain.
+                    chrome.runtime.sendMessage({ action: 'startChain', prompts });
+                }
             });
         });
 
