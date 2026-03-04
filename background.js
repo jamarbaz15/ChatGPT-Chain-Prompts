@@ -14,6 +14,17 @@
 // In-memory only: download-id → tab-id
 const pendingDownloads = new Map();
 
+// ── Keep-alive port ─────────────────────────────────────────────────────────────
+// Content scripts connect via chrome.runtime.connect({ name: 'keepalive' }).
+// An open Port (a) keeps this service worker alive without needing any hack,
+// and (b) gives the renderer process a pending async task that prevents Chrome
+// from freezing the background tab.  Simply drain any messages that arrive.
+chrome.runtime.onConnect.addListener(port => {
+    if (port.name !== 'keepalive') return;
+    port.onMessage.addListener(() => {});
+    port.onDisconnect.addListener(() => { void chrome.runtime.lastError; });
+});
+
 // ── Alarm listener ─────────────────────────────────────────────────────────────
 chrome.alarms.onAlarm.addListener(alarm => {
     if (alarm.name === 'promptWatchdog') {

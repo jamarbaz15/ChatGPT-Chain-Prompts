@@ -8,17 +8,19 @@
 //   4. Extracts the last assistant message
 //   5. Tells background 'promptDone' so it can download + advance the chain
 
-// Prevent Chrome from "freezing" this background tab.
+// ── Background-tab keep-alive ──────────────────────────────────────────────────
+// Chrome's Page Lifecycle can "freeze" a hidden tab, suspending ALL JavaScript
+// including timers and intervals.  Two complementary defences are used:
 //
-// Chrome's Page Lifecycle can suspend a hidden tab (frozen state), which
-// silently stops ALL JavaScript timers and intervals — including the 30-second
-// inter-prompt wait and the phase-2 response-polling loops.  That is why the
-// extension appeared to halt unless the user hovered over the tab (hover events
-// briefly un-freeze the page).
-//
-// Holding a Web Lock indefinitely keeps the tab in "hidden" state instead of
-// "frozen" state: timers keep firing, DOM is accessible, content script runs
-// normally in the background without any visible interruption to the user.
+// 1. Web Lock — a held lock tells Chrome the page has an active resource and
+//    must stay in "hidden" (not "frozen") state.
+// 2. Persistent port — chrome.runtime.connect() keeps an open message channel
+//    to the service worker.  The pending port connection counts as an active
+//    async task, reinforcing the freeze-prevention, and simultaneously keeps
+//    the MV3 service worker alive (SW stays running while any port is open).
+//    If the SW is killed (and the port drops), we reconnect immediately so the
+//    next SW start also benefits from a live port.
+
 if (typeof navigator.locks !== 'undefined') {
     navigator.locks.request(
         'chain-prompt-active',
@@ -26,6 +28,25 @@ if (typeof navigator.locks !== 'undefined') {
         () => new Promise(() => {})   // never resolves → hold lock for page lifetime
     );
 }
+
+let _keepalivePort = null;
+function _connectKeepalive() {
+    try {
+        _keepalivePort = chrome.runtime.connect({ name: 'keepalive' });
+        // Periodic ping keeps the port from timing out in some Chrome builds
+        const hb = setInterval(() => {
+            try { _keepalivePort.postMessage('ping'); }
+            catch (e) { clearInterval(hb); }
+        }, 10000);
+        _keepalivePort.onDisconnect.addListener(() => {
+            clearInterval(hb);
+            _keepalivePort = null;
+            // Reconnect after a short pause; SW may be restarting
+            setTimeout(_connectKeepalive, 500);
+        });
+    } catch (e) {}
+}
+_connectKeepalive();
 
 // Let background know this tab's content script is alive
 chrome.runtime.sendMessage({ action: 'contentReady' }, () => {
@@ -59,6 +80,11 @@ function jiggleMouse() {
 // inserts newlines as line-breaks rather than submissions.
 async function humanType(element, text) {
     element.focus();
+    // In a background tab element.focus() is a no-op at the browser level.
+    // Dispatch synthetic FocusEvent so ChatGPT's React state machine sees the
+    // textarea as focused and keeps the send button enabled.
+    element.dispatchEvent(new FocusEvent('focus',   { bubbles: false, cancelable: false, composed: true }));
+    element.dispatchEvent(new FocusEvent('focusin',  { bubbles: true,  cancelable: false, composed: true }));
     await randomDelay(600, 1800);
     if (stopped) return;
 
@@ -185,14 +211,21 @@ function waitForElement(selector, timeoutMs = 15000) {
     });
 }
 
-// Clicks the send button, retrying every 100 ms for up to 5 s
+// Clicks the send button, retrying every 100 ms for up to 5 s.
+// IMPORTANT: only click once the button is enabled — in background tabs the
+// button can exist but remain disabled because React hasn't seen real focus.
+// Clicking a disabled button is a silent no-op that permanently stalls the
+// chain (Phase 1 then times out waiting for a response that never comes).
 async function clickSendButton() {
     for (let i = 0; i < 50; i++) {
         if (stopped) return false;
         const btn = document.querySelector(
             'button[aria-label="Send prompt"][data-testid="send-button"]'
         );
-        if (btn) { btn.click(); return true; }
+        if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') {
+            btn.click();
+            return true;
+        }
         await sleep(100);
     }
     return false;
