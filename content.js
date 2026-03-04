@@ -69,13 +69,28 @@ async function humanType(element, text) {
         }
     }
 
-    const typed  = text.slice(0, cutoff);
-    const pasted = text.slice(cutoff);
+    const typedPortion  = text.slice(0, cutoff);
+    const pastedPortion = text.slice(cutoff);
+
+    // Track the string we've committed so far in a JS variable rather than
+    // reading back from the DOM between keystrokes.  This avoids conflicts
+    // with React re-renders that may wrap content in <p> tags.
+    //
+    // We use element.textContent = current + char rather than
+    // document.execCommand('insertText') because execCommand requires the
+    // document to have focus — it silently fails in background tabs, leaving
+    // the textarea empty and the send button permanently disabled.
+    let current = '';
 
     // Type first portion character by character
-    for (const char of typed) {
+    for (const char of typedPortion) {
         if (stopped) return;
-        document.execCommand('insertText', false, char);
+        current += char;
+        element.textContent = current;
+        element.dispatchEvent(new InputEvent('input', {
+            bubbles: true, cancelable: true, composed: true,
+            inputType: 'insertText', data: char,
+        }));
         const delay = Math.random() < 0.05
             ? randomInt(450, 1100)  // occasional thinking pause
             : randomInt(48, 145);   // normal keystroke cadence
@@ -84,11 +99,16 @@ async function humanType(element, text) {
     }
 
     // Paste the rest in one operation (safe for newlines, fast for long prompts)
-    if (pasted) {
+    if (pastedPortion) {
         if (stopped) return;
         await randomDelay(200, 600);  // brief pause like reaching for Ctrl+V
         if (stopped) return;
-        document.execCommand('insertText', false, pasted);
+        current += pastedPortion;
+        element.textContent = current;
+        element.dispatchEvent(new InputEvent('input', {
+            bubbles: true, cancelable: true, composed: true,
+            inputType: 'insertText', data: pastedPortion,
+        }));
         await sleep(randomInt(150, 400));
     }
 
