@@ -208,15 +208,21 @@ async function executePrompt(prompt, promptIndex, total) {
     //    the detector to fire early and capture only a partial response.
     //
     //    The fix: require the stop button to have been CONTINUOUSLY absent for
-    //    MIN_DONE_MS (3 s) before we trust it.  If generation resumes (button
-    //    comes back) we reset the timer.  A genuine mid-stream pause is < 2 s;
-    //    real completion means the button is gone for good.
+    //    MIN_DONE_MS before we trust it.  If generation resumes (button comes
+    //    back) we reset the timer.  Rate-limited sessions can produce mid-stream
+    //    pauses of 3–6 s, so MIN_DONE_MS is set to 8 s to ride them out safely.
     //
     //    Combined condition to declare done:
     //      • stop button has been absent for ≥ MIN_DONE_MS in a row, AND
-    //      • text length unchanged for ≥ 2 consecutive polls, AND
+    //      • text length unchanged for ≥ 6 consecutive polls (~5–7 s), AND
     //      • text is non-empty
-    const MIN_DONE_MS = 3000;
+    //
+    //    Safety valve: resolve after MAX_WAIT_MS regardless (avoids an infinite
+    //    hang if ChatGPT shows a CAPTCHA or unexpected error page).
+    const MIN_DONE_MS  = 8000;           // 8 s — outlasts typical rate-limit pauses
+    const MAX_WAIT_MS  = 5 * 60 * 1000; // 5 min absolute ceiling
+    const phase2Start  = Date.now();
+
     await new Promise(resolve => {
         const scrollTimer = setInterval(() => {
             if (Math.random() < 0.35) {
@@ -232,6 +238,14 @@ async function executePrompt(prompt, promptIndex, total) {
 
         const doneTimer = setInterval(() => {
             if (stopped) {
+                clearInterval(doneTimer);
+                clearInterval(scrollTimer);
+                resolve();
+                return;
+            }
+
+            // Safety valve — never wait more than MAX_WAIT_MS
+            if (Date.now() - phase2Start >= MAX_WAIT_MS) {
                 clearInterval(doneTimer);
                 clearInterval(scrollTimer);
                 resolve();
@@ -275,8 +289,8 @@ async function executePrompt(prompt, promptIndex, total) {
             }
 
             // Only declare done once the stop button has been gone long enough
-            // (rules out mid-stream pauses) AND the text has settled
-            if (absentFor >= MIN_DONE_MS && stableTicks >= 2) {
+            // (rules out rate-limit pauses) AND the text has fully settled
+            if (absentFor >= MIN_DONE_MS && stableTicks >= 6) {
                 clearInterval(doneTimer);
                 clearInterval(scrollTimer);
                 resolve();
@@ -285,7 +299,11 @@ async function executePrompt(prompt, promptIndex, total) {
     });
     if (stopped) return;
 
-    // 6. Extract response and tell background to download + advance the chain
+    // 6. Brief pause to let React finish any final DOM commits before reading
+    await sleep(1500);
+    if (stopped) return;
+
+    // 7. Extract response and tell background to download + advance the chain
     const responseText = extractLastResponse();
     chrome.runtime.sendMessage({
         action: 'promptDone',

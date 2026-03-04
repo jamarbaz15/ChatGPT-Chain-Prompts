@@ -20,7 +20,17 @@ const pendingDownloads = new Map();
 const BETWEEN_PROMPT_DELAY_MIN = 0.5;  // 30 seconds (Chrome min is ~30 s on desktop)
 
 chrome.alarms.onAlarm.addListener(alarm => {
-    if (alarm.name === 'nextPrompt') openNextPrompt();
+    if (alarm.name === 'nextPrompt') {
+        openNextPrompt();
+    } else if (alarm.name === 'promptWatchdog') {
+        // A prompt tab has been open for too long without completing.
+        // This happens when ChatGPT shows a CAPTCHA, hard rate-limit page, or
+        // any other UI the content script cannot handle.  Skip the stuck prompt
+        // so the chain can continue.
+        getState().then(state => {
+            if (state.currentTabId !== null) closeTabAndAdvance(state.currentTabId);
+        });
+    }
 });
 
 // ── Persistent state helpers ───────────────────────────────────────────────────
@@ -56,7 +66,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             break;
 
         case 'promptDone':
-            // Content script finished a response — download it, then advance
+            // Content script finished a response — cancel watchdog, download, advance
+            chrome.alarms.clear('promptWatchdog', () => {});
             handlePromptDone(
                 sender.tab && sender.tab.id,
                 request.text,
@@ -118,7 +129,14 @@ function openNextPrompt() {
         // between now and contentReady can still match the tab correctly.
         return new Promise(resolve => {
             chrome.tabs.create({ url: 'https://chatgpt.com/', active: true }, tab => {
-                setState({ currentTabId: tab.id }).then(resolve);
+                setState({ currentTabId: tab.id }).then(() => {
+                    // Watchdog: if this prompt isn't done within 10 minutes, skip it.
+                    // Covers CAPTCHA pages, hard rate-limit screens, SW crashes, etc.
+                    chrome.alarms.clear('promptWatchdog', () => {
+                        chrome.alarms.create('promptWatchdog', { delayInMinutes: 10 });
+                    });
+                    resolve();
+                });
             });
         });
     });
