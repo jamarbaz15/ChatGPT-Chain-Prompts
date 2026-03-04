@@ -313,11 +313,24 @@ async function executePrompt(prompt, promptIndex, total) {
 }
 
 // ── Message listener ───────────────────────────────────────────────────────────
+// Inter-prompt pause: 30 s of breathing room between prompts, implemented here
+// in the stable tab context rather than in the MV3 service worker.  A SW
+// setTimeout is unreliable because Chrome can kill the SW after ~30 s of idle,
+// whereas a content-script setTimeout runs in the tab's normal event loop.
+let executeTimeout = null;
+
 chrome.runtime.onMessage.addListener(request => {
     if (request.action === 'executePrompt') {
-        executePrompt(request.prompt, request.promptIndex, request.total);
+        executeTimeout = setTimeout(() => {
+            executeTimeout = null;
+            if (!stopped) executePrompt(request.prompt, request.promptIndex, request.total);
+        }, 30000);
     }
     if (request.action === 'stopExecution') {
         stopped = true;
+        if (executeTimeout !== null) {
+            clearTimeout(executeTimeout);
+            executeTimeout = null;
+        }
     }
 });

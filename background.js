@@ -14,15 +14,9 @@
 // In-memory only: download-id → tab-id
 const pendingDownloads = new Map();
 
-// ── Inter-prompt pause (alarm-based, SW-safe) ──────────────────────────────────
-// setTimeout is lost if the MV3 service worker is killed during the delay.
-// chrome.alarms survive SW restarts and will wake the worker back up.
-const BETWEEN_PROMPT_DELAY_MIN = 0.5;  // 30 seconds (Chrome min is ~30 s on desktop)
-
+// ── Alarm listener ─────────────────────────────────────────────────────────────
 chrome.alarms.onAlarm.addListener(alarm => {
-    if (alarm.name === 'nextPrompt') {
-        openNextPrompt();
-    } else if (alarm.name === 'promptWatchdog') {
+    if (alarm.name === 'promptWatchdog') {
         // A prompt tab has been open for too long without completing.
         // This happens when ChatGPT shows a CAPTCHA, hard rate-limit page, or
         // any other UI the content script cannot handle.  Skip the stuck prompt
@@ -132,10 +126,12 @@ function openNextPrompt() {
                 setState({ currentTabId: tab.id }).then(() => {
                     // Watchdog: if this prompt isn't done within 10 minutes, skip it.
                     // Covers CAPTCHA pages, hard rate-limit screens, SW crashes, etc.
+                    // resolve() is called INSIDE the create callback so the Promise
+                    // only settles after the alarm is guaranteed to be registered.
                     chrome.alarms.clear('promptWatchdog', () => {
                         chrome.alarms.create('promptWatchdog', { delayInMinutes: 10 });
+                        resolve();
                     });
-                    resolve();
                 });
             });
         });
@@ -177,10 +173,11 @@ function handlePromptDone(tabId, text, promptIndex) {
 }
 
 function closeTabAndAdvance(tabId) {
-    // Persist the incremented index FIRST so a SW restart won't replay the
-    // same prompt.  Then close the tab and schedule the next one via an alarm
-    // (30-second pause).  Using chrome.alarms instead of setTimeout ensures
-    // the delay survives a service-worker restart during the wait.
+    // Persist the incremented index FIRST so a SW restart won't replay the same
+    // prompt.  Then close the tab and immediately open the next one.  The
+    // 30-second inter-prompt breathing pause lives in the content script (which
+    // runs in a stable tab context) rather than here in the service worker,
+    // avoiding MV3 SW-lifetime and chrome.alarms minimum-delay edge cases.
     getState()
         .then(state => setState({ currentIndex: state.currentIndex + 1 }))
         .then(() => new Promise(resolve => {
@@ -189,7 +186,7 @@ function closeTabAndAdvance(tabId) {
                 resolve();
             });
         }))
-        .then(() => chrome.alarms.create('nextPrompt', { delayInMinutes: BETWEEN_PROMPT_DELAY_MIN }));
+        .then(() => openNextPrompt());
 }
 
 // ── Utility ────────────────────────────────────────────────────────────────────
