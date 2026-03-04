@@ -109,6 +109,7 @@ chrome.downloads.onChanged.addListener(delta => {
 
     if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
         pendingDownloads.delete(delta.id);
+        chrome.downloads.setShelfEnabled(true);   // restore shelf for other downloads
         closeTabAndAdvance(tabId);
     }
 });
@@ -162,9 +163,13 @@ function handlePromptDone(tabId, text, promptIndex) {
     const filename  = `prompt-${promptIndex}-response.txt`;
     const dataUrl   = 'data:text/plain;charset=utf-8,' + encodeURIComponent(safeText);
 
+    // Hide the download shelf so the file saves silently without covering
+    // the screen.  Re-enabled in onChanged once the download settles.
+    chrome.downloads.setShelfEnabled(false);
+
     chrome.downloads.download({ url: dataUrl, filename, saveAs: false }, downloadId => {
         if (chrome.runtime.lastError || downloadId === undefined) {
-            // Download API failed — still advance so the chain doesn't get stuck
+            chrome.downloads.setShelfEnabled(true);   // restore on failure too
             closeTabAndAdvance(tabId);
             return;
         }
