@@ -8,6 +8,25 @@
 //   4. Extracts the last assistant message
 //   5. Tells background 'promptDone' so it can download + advance the chain
 
+// Prevent Chrome from "freezing" this background tab.
+//
+// Chrome's Page Lifecycle can suspend a hidden tab (frozen state), which
+// silently stops ALL JavaScript timers and intervals — including the 30-second
+// inter-prompt wait and the phase-2 response-polling loops.  That is why the
+// extension appeared to halt unless the user hovered over the tab (hover events
+// briefly un-freeze the page).
+//
+// Holding a Web Lock indefinitely keeps the tab in "hidden" state instead of
+// "frozen" state: timers keep firing, DOM is accessible, content script runs
+// normally in the background without any visible interruption to the user.
+if (typeof navigator.locks !== 'undefined') {
+    navigator.locks.request(
+        'chain-prompt-active',
+        { mode: 'shared' },
+        () => new Promise(() => {})   // never resolves → hold lock for page lifetime
+    );
+}
+
 // Let background know this tab's content script is alive
 chrome.runtime.sendMessage({ action: 'contentReady' }, () => {
     void chrome.runtime.lastError;

@@ -139,23 +139,23 @@ function openNextPrompt() {
     });
 }
 
-// Wait a human-like delay so ChatGPT's React UI is fully initialised, then
-// send the current prompt to the content script.
+// Send the current prompt to the content script immediately.
+// There is intentionally no setTimeout here: the MV3 service worker can be
+// killed by Chrome at any time, and a pending setTimeout is silently dropped
+// when that happens.  The content script already has its own 30-second
+// inter-prompt pause (in executeTimeout) and calls waitForElement() to wait
+// for the ChatGPT textarea, so no SW-side delay is needed.
 function schedulePromptForTab(tabId) {
-    const delay = randomInt(2500, 4500);
-    setTimeout(() => {
-        // Re-read state from storage in case the SW was restarted during the delay
-        getState().then(state => {
-            const prompt = state.prompts[state.currentIndex];
-            if (prompt === undefined) return;
-            chrome.tabs.sendMessage(tabId, {
-                action: 'executePrompt',
-                prompt,
-                promptIndex: state.currentIndex + 1,
-                total: state.prompts.length
-            }, () => { void chrome.runtime.lastError; });
-        });
-    }, delay);
+    getState().then(state => {
+        const prompt = state.prompts[state.currentIndex];
+        if (prompt === undefined) return;
+        chrome.tabs.sendMessage(tabId, {
+            action: 'executePrompt',
+            prompt,
+            promptIndex: state.currentIndex + 1,
+            total: state.prompts.length
+        }, () => { void chrome.runtime.lastError; });
+    });
 }
 
 function handlePromptDone(tabId, text, promptIndex) {
