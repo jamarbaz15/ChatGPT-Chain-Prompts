@@ -110,6 +110,19 @@ function isGenerating() {
     );
 }
 
+// Returns the "Continue generating" button if ChatGPT paused a long response
+// mid-stream and is waiting for the user to resume it.
+function continueButton() {
+    for (const btn of document.querySelectorAll('button')) {
+        const label = btn.getAttribute('aria-label') || '';
+        const text  = (btn.innerText || btn.textContent || '').trim();
+        if (label === 'Continue generating' || text === 'Continue generating') {
+            return btn;
+        }
+    }
+    return null;
+}
+
 function extractLastResponse() {
     const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
     if (!msgs.length) return '';
@@ -232,6 +245,18 @@ async function executePrompt(prompt, promptIndex, total) {
             if (isGenerating()) {
                 // Generation is active — reset all counters and wait
                 notGenSince = null;
+                stableTicks = 0;
+                lastLen     = curLen;
+                return;
+            }
+
+            // ChatGPT sometimes pauses very long responses and shows a
+            // "Continue generating" button instead of the stop button.
+            // Auto-click it so we capture the full response.
+            const contBtn = continueButton();
+            if (contBtn) {
+                contBtn.click();
+                notGenSince = null;   // back to generating — reset timer
                 stableTicks = 0;
                 lastLen     = curLen;
                 return;

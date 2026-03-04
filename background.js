@@ -14,6 +14,15 @@
 // In-memory only: download-id → tab-id
 const pendingDownloads = new Map();
 
+// ── Inter-prompt pause (alarm-based, SW-safe) ──────────────────────────────────
+// setTimeout is lost if the MV3 service worker is killed during the delay.
+// chrome.alarms survive SW restarts and will wake the worker back up.
+const BETWEEN_PROMPT_DELAY_MIN = 0.5;  // 30 seconds (Chrome min is ~30 s on desktop)
+
+chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === 'nextPrompt') openNextPrompt();
+});
+
 // ── Persistent state helpers ───────────────────────────────────────────────────
 const DEFAULT_STATE = { prompts: [], currentIndex: 0, currentTabId: null };
 
@@ -151,9 +160,9 @@ function handlePromptDone(tabId, text, promptIndex) {
 
 function closeTabAndAdvance(tabId) {
     // Persist the incremented index FIRST so a SW restart won't replay the
-    // same prompt.  Then close the tab and immediately open the next one —
-    // no setTimeout gap here; the natural page-load time plus the
-    // schedulePromptForTab delay (2.5–4.5 s) provides sufficient pacing.
+    // same prompt.  Then close the tab and schedule the next one via an alarm
+    // (30-second pause).  Using chrome.alarms instead of setTimeout ensures
+    // the delay survives a service-worker restart during the wait.
     getState()
         .then(state => setState({ currentIndex: state.currentIndex + 1 }))
         .then(() => new Promise(resolve => {
@@ -162,7 +171,7 @@ function closeTabAndAdvance(tabId) {
                 resolve();
             });
         }))
-        .then(() => openNextPrompt());
+        .then(() => chrome.alarms.create('nextPrompt', { delayInMinutes: BETWEEN_PROMPT_DELAY_MIN }));
 }
 
 // ── Utility ────────────────────────────────────────────────────────────────────
