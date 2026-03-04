@@ -188,10 +188,22 @@ async function executePrompt(prompt, promptIndex, total) {
     if (!started || stopped) return;
 
     // 5. Phase 2 – wait for streaming to FINISH.
-    //    Done = stop button is gone AND the last assistant message's text length
-    //    has been identical for 2 consecutive polls (~1.6–2.4 s of stability).
-    //    This correctly handles long responses, reasoning models, and cases where
-    //    the stop button selector is stale.
+    //
+    //    ChatGPT sometimes pauses mid-stream for 1–2 s (server think time,
+    //    rate limiting, network stall).  During such a pause the stop button
+    //    disappears and the text is temporarily stable, which previously caused
+    //    the detector to fire early and capture only a partial response.
+    //
+    //    The fix: require the stop button to have been CONTINUOUSLY absent for
+    //    MIN_DONE_MS (3 s) before we trust it.  If generation resumes (button
+    //    comes back) we reset the timer.  A genuine mid-stream pause is < 2 s;
+    //    real completion means the button is gone for good.
+    //
+    //    Combined condition to declare done:
+    //      • stop button has been absent for ≥ MIN_DONE_MS in a row, AND
+    //      • text length unchanged for ≥ 2 consecutive polls, AND
+    //      • text is non-empty
+    const MIN_DONE_MS = 3000;
     await new Promise(resolve => {
         const scrollTimer = setInterval(() => {
             if (Math.random() < 0.35) {
@@ -200,9 +212,10 @@ async function executePrompt(prompt, promptIndex, total) {
             }
         }, randomInt(2500, 5000));
 
-        let lastLen     = -1;
-        let stableTicks = 0;
-        const pollInterval = randomInt(800, 1200);
+        let lastLen          = -1;
+        let stableTicks      = 0;
+        let notGenSince      = null;   // timestamp when stop button last disappeared
+        const pollInterval   = randomInt(800, 1200);
 
         const doneTimer = setInterval(() => {
             if (stopped) {
@@ -216,17 +229,32 @@ async function executePrompt(prompt, promptIndex, total) {
             const last   = msgs[msgs.length - 1];
             const curLen = last ? (last.innerText || last.textContent || '').length : 0;
 
-            // Require: not actively generating + text non-empty + text unchanged
-            if (!isGenerating() && curLen > 0 && curLen === lastLen) {
+            if (isGenerating()) {
+                // Generation is active — reset all counters and wait
+                notGenSince = null;
+                stableTicks = 0;
+                lastLen     = curLen;
+                return;
+            }
+
+            // Stop button is gone — start (or keep) the continuous-absence timer
+            if (notGenSince === null) notGenSince = Date.now();
+            const absentFor = Date.now() - notGenSince;
+
+            // Track text stability independently
+            if (curLen > 0 && curLen === lastLen) {
                 stableTicks++;
-                if (stableTicks >= 2) {         // stable for 2 consecutive polls
-                    clearInterval(doneTimer);
-                    clearInterval(scrollTimer);
-                    resolve();
-                }
             } else {
                 stableTicks = 0;
-                lastLen = curLen;
+                lastLen     = curLen;
+            }
+
+            // Only declare done once the stop button has been gone long enough
+            // (rules out mid-stream pauses) AND the text has settled
+            if (absentFor >= MIN_DONE_MS && stableTicks >= 2) {
+                clearInterval(doneTimer);
+                clearInterval(scrollTimer);
+                resolve();
             }
         }, pollInterval);
     });
